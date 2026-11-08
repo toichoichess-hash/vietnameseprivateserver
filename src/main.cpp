@@ -25,8 +25,6 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
 
-#pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
-
 #define DWMWA_USE_IMMERSIVE_DARK_MODE_VAL 20
 
 // Modern Dark Theme Palette
@@ -108,7 +106,8 @@ void DoLaunch(HWND hwnd) {
     GetWindowTextW(g_hEntry, buf, 2047);
     std::wstring uri = BuildUri(buf);
 
-    if (uri.empty()) {
+    // Validate that the URI strictly begins with the native roblox:// protocol
+    if (uri.empty() || uri.rfind(L"roblox://", 0) != 0) {
         SetStatus(hwnd, L"Link not recognized", COLOR_ERR);
         return;
     }

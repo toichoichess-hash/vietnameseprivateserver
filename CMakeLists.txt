@@ -17,6 +17,11 @@ target_link_libraries(VngPsLauncher PRIVATE
     shell32
 )
 
+if(MSVC)
+    target_compile_options(VngPsLauncher PRIVATE /GS /guard:cf /GL /W3 /O2)
+    target_link_options(VngPsLauncher PRIVATE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /LTCG /OPT:REF /OPT:ICF)
+endif()
+
 set_target_properties(VngPsLauncher PROPERTIES
     WIN32_EXECUTABLE TRUE
     OUTPUT_NAME "VngPsLauncher"
