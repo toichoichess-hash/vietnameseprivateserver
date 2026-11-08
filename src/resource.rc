@@ -14,13 +14,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName",      "Roblox Fast Launcher"
-            VALUE "FileDescription",  "High-Performance Native Roblox Server & Share Link Launcher"
+            VALUE "CompanyName",      "VNG PS Launcher"
+            VALUE "FileDescription",  "VNG Private Server & Share Link Fast Launcher"
             VALUE "FileVersion",      "1.0.0.0"
-            VALUE "InternalName",     "RobloxLauncher"
+            VALUE "InternalName",     "VngPsLauncher"
             VALUE "LegalCopyright",   "Copyright (C) 2026. MIT License."
-            VALUE "OriginalFilename", "RobloxLauncher.exe"
-            VALUE "ProductName",      "Roblox Fast Launcher"
+            VALUE "OriginalFilename", "VngPsLauncher.exe"
+            VALUE "ProductName",      "VNG PS Launcher"
             VALUE "ProductVersion",   "1.0.0.0"
         END
     END

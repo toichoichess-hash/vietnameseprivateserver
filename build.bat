@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ======================================================================
-echo           Building Roblox Fast Launcher (Release x64)
+echo             Building VNG PS Launcher (Release x64)
 echo ======================================================================
 
 set "VS_PATH="
@@ -34,13 +34,13 @@ echo [*] Compiling Windows resource file...
 rc.exe /nologo /fo "bin\resource.res" "src\resource.rc"
 
 echo [*] Compiling C++ source code...
-cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /Fe:"bin\RobloxLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib
+cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /Fe:"bin\VngPsLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib
 
 if %errorlevel% equ 0 (
     echo.
     echo ======================================================================
     echo [✓] Build successful!
-    echo Output: bin\RobloxLauncher.exe
+    echo Output: bin\VngPsLauncher.exe
     echo ======================================================================
 ) else (
     echo.

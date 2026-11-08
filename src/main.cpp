@@ -1,5 +1,5 @@
 /**
- * Roblox Fast Launcher
+ * VNG PS Launcher (Vietnamese Private Server Launcher)
  * High-performance, lightweight native Win32 private server & share link launcher.
  *
  * Direct URL Protocol Translation:
@@ -232,12 +232,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             SelectObject(hdc, g_hFontTitle);
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, COLOR_FG);
-            TextOutW(hdc, 24, 20, L"Roblox Launcher", 15);
+            TextOutW(hdc, 24, 20, L"VNG PS Launcher", 15);
 
             // Subtitle
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, COLOR_MUTED);
-            TextOutW(hdc, 25, 54, L"Paste a private server link and launch it directly.", 51);
+            TextOutW(hdc, 25, 54, L"Paste a private server link or share link to launch directly.", 61);
 
             // Card Panel Background for Entry Box
             RECT rcCard = { 24, 82, 516, 124 };
@@ -293,7 +293,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(101));
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszClassName = L"RobloxLauncherWndClass";
+    wc.lpszClassName = L"VngPsLauncherWndClass";
 
     if (!RegisterClassExW(&wc)) return 0;
 
@@ -302,8 +302,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     HWND hwnd = CreateWindowExW(
         0,
-        L"RobloxLauncherWndClass",
-        L"Roblox Launcher",
+        L"VngPsLauncherWndClass",
+        L"VNG PS Launcher",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT,
         rc.right - rc.left, rc.bottom - rc.top,
@@ -327,3 +327,4 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return (int)msg.wParam;
 }
+

@@ -1,28 +1,39 @@
-# 🚀 Roblox Fast Launcher
+# 🚀 VNG PS Launcher
 
+[![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](https://github.com/toichoichess-hash/vietnameseprivateserver/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://www.microsoft.com/windows)
 [![C++](https://img.shields.io/badge/Language-C%2B%2B17-00599C.svg?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![GUI](https://img.shields.io/badge/GUI-Native%20Win32-purple.svg)](https://learn.microsoft.com/en-us/windows/win32/)
 [![Binary Size](https://img.shields.io/badge/Binary%20Size-~50%20KB-success.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A blisteringly fast, ultra-lightweight native Windows utility that instantly launches Roblox private servers and share links directly via the `roblox://` protocol—completely bypassing browser redirect lag, slow web pages, and browser prompts.
+A lightning-fast, ultra-lightweight native Windows launcher for **Vietnamese Private Servers (VNG)** and Roblox Share links. It directly translates web links into the native `roblox://` protocol, bypassing browser redirect lag, CAPTCHAs, and loading screens.
+
+---
+
+## ⬇️ Download
+
+Download the portable standalone executable (no installation needed, zero runtime dependencies):
+
+### 📥 **[Download VngPsLauncher.exe (Latest Release)](https://github.com/toichoichess-hash/vietnameseprivateserver/releases/latest/download/VngPsLauncher.exe)**
+
+*(You can also find all versions and changelogs on the [Releases Page](https://github.com/toichoichess-hash/vietnameseprivateserver/releases).)*
 
 ---
 
 ## ✨ Features
 
-- ⚡ **Zero-Latency Launch**: Converts web URLs into native `roblox://` protocol URIs and dispatches via Windows Shell instantly.
-- 🎨 **Immersive Dark Theme**: Native Windows 10/11 DWM dark titlebar and sleek custom-rendered dark UI components.
-- 🪶 **Ultra-Lightweight**: Built with pure C++ and Win32 API. No Electron, no WebView2, no bloated runtimes. Standalone binary is only **~50 KB**.
-- 📋 **One-Click Convenience**: Includes `Paste`, `Clear`, and `Launch` actions, with full keyboard support (`Enter` key launches immediately).
-- 🔒 **Zero External Dependencies**: Compiles against standard Windows system libraries (`user32`, `gdi32`, `comctl32`, `dwmapi`, `shell32`).
+- ⚡ **Direct Protocol Dispatch**: Converts links to `roblox://` URIs and launches them immediately through Windows Shell.
+- 🎨 **Immersive Dark Mode**: Windows 11 / 10 DWM dark titlebar and custom dark palette styling.
+- 🪶 **Zero Bloat (~50 KB)**: Written in pure C++ and Win32. No Electron, no WebView2, no external dependencies.
+- 📋 **1-Click Convenience**: Includes `Paste`, `Clear`, and `Launch` buttons, plus instant keyboard support (press `Enter` to launch).
+- 🔒 **Safe & Open Source**: Clean, transparent C++ code that only launches the registered system protocol.
 
 ---
 
 ## 🔗 Supported URL Formats
 
-Roblox Fast Launcher automatically parses and translates:
+VNG PS Launcher automatically parses and handles:
 
 | Link Type | Web Link Format | Translated Protocol URI |
 | :--- | :--- | :--- |
@@ -31,28 +42,28 @@ Roblox Fast Launcher automatically parses and translates:
 
 ---
 
-## 🖥️ Preview & Usage
+## 🖥️ How to Use
 
 1. Copy any Roblox private server link or share link to your clipboard.
-2. Open **RobloxLauncher.exe**.
+2. Open **`VngPsLauncher.exe`**.
 3. Click **Paste** (or press `Ctrl + V`).
 4. Press **Enter** or click **Launch**.
-5. Roblox boots up immediately into the target private server.
+5. The game boots up directly into the target private server.
 
 ---
 
 ## 🛠️ Building from Source
 
 ### Prerequisites
-* Windows 10 / 11 (64-bit)
-* Visual Studio 2019, 2022, or 2026 with the **Desktop development with C++** workload installed, or any standard MSVC / Clang-cl environment.
+* Windows 10 or 11 (64-bit)
+* Visual Studio with **Desktop development with C++** (MSVC compiler).
 
-### Option 1: 1-Click Batch Build (Recommended)
-Simply double-click:
+### Option 1: 1-Click Build Script
+Double-click:
 ```cmd
 build.bat
 ```
-This automatically initializes `vcvarsall.bat x64`, compiles the Win32 resources, builds `src/main.cpp`, and outputs `bin/RobloxLauncher.exe`.
+This automatically compiles `src/main.cpp` and `src/resource.rc` into `bin/VngPsLauncher.exe`.
 
 ### Option 2: Build with CMake
 ```bash
@@ -61,27 +72,22 @@ cmake ..
 cmake --build . --config Release
 ```
 
-### Option 3: Compile via Command Line (MSVC)
-From a **x64 Native Tools Command Prompt for VS**:
-```cmd
-rc.exe /fo resource.res src/resource.rc
-cl.exe /O2 /W3 /DNDEBUG /EHsc /std:c++17 src/main.cpp resource.res /Fe:RobloxLauncher.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib
-```
-
 ---
 
 ## 📂 Project Structure
 
 ```text
-roblox-launcher/
-├── .gitignore          # Git ignore rules for build artifacts
-├── CMakeLists.txt      # Modern CMake configuration
-├── LICENSE             # MIT License
-├── README.md           # Documentation & guides
-├── build.bat           # 1-click MSVC compile script
+vietnameseprivateserver/
+├── .gitignore             # Git ignore rules for build artifacts
+├── CMakeLists.txt         # Modern CMake configuration
+├── LICENSE                # MIT License
+├── README.md              # Documentation & download links
+├── build.bat              # 1-click MSVC compile script
+├── push_to_github.bat     # Fast git push helper
+├── roblox_launcher.cpp    # Root single-file source code
 └── src/
-    ├── main.cpp        # Main application source code
-    └── resource.rc     # Application manifest & version info
+    ├── main.cpp           # Main application source code
+    └── resource.rc        # Application manifest & version metadata
 ```
 
 ---
