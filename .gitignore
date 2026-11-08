@@ -1,0 +1,24 @@
+# Build artifacts
+bin/
+build/
+dist/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.idb
+*.res
+
+# Visual Studio / MSVC
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+out/
+CMakeSettings.json
+
+# Operating System
+Thumbs.db
+Desktop.ini
+.DS_Store
