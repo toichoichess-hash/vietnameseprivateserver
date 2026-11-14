@@ -152,6 +152,7 @@ bool g_onlyNewMessages = true;
 bool g_anyNewPs = false;
 HWND g_hChkAny = NULL;
 #define IDC_CHK_ANY 218
+#define IDC_ADD_FROM_WIN 219
 std::wstring g_discordToken = L"";
 
 std::vector<DiscordGuild> g_allGuilds;
@@ -545,6 +546,8 @@ void RefreshChannelAndKeywordListsUI() {
             std::wstring label;
             if (ch.id == UIA_CHANNEL_ID) {
                 label = L"[Background UIA] Open Discord Window(s)";
+            } else if (ch.id.rfind(L"WIN:", 0) == 0) {
+                label = L"[Window] " + ch.guildName + L" > " + ch.name;
             } else {
                 label = ch.guildName + L" > " + ch.name + L" (" + ch.id + L")";
             }
@@ -1053,7 +1056,7 @@ DWORD WINAPI DiscordGatewayWebSocketThread(LPVOID) {
         // Count how many API/Gateway channels are watched
         std::unordered_map<std::wstring, DiscordChannel> watchedMap;
         for (const auto& ch : watched) {
-            if (ch.id != UIA_CHANNEL_ID) {
+            if (ch.id != UIA_CHANNEL_ID && ch.id.rfind(L"WIN:", 0) != 0) {
                 watchedMap[ch.id] = ch;
             }
         }
@@ -1428,7 +1431,7 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
         bool useUia = false;
         for (const auto& ch : channels) {
             if (!g_sniperRunning) break;
-            if (ch.id == UIA_CHANNEL_ID) {
+            if (ch.id == UIA_CHANNEL_ID || ch.id.rfind(L"WIN:", 0) == 0) {
                 useUia = true;
                 continue;
             }
@@ -1547,6 +1550,66 @@ DWORD WINAPI BackgroundLinkWatcherThread(LPVOID) {
 // ============================================================================
 // UI Actions
 // ============================================================================
+// No-token mode: read the open Discord window titles and add their channel+server to the watched list
+static std::wstring StripBrowserSuffix(std::wstring t) {
+    while (true) {
+        size_t p = t.rfind(L" - ");
+        if (p == std::wstring::npos) break;
+        std::wstring suf = t.substr(p + 3);
+        if (suf.find(L"Discord") != std::wstring::npos || suf.find(L"Chrome") != std::wstring::npos ||
+            suf.find(L"Edge") != std::wstring::npos || suf.find(L"Brave") != std::wstring::npos ||
+            suf.find(L"Firefox") != std::wstring::npos || suf.find(L"Opera") != std::wstring::npos ||
+            suf.find(L"Chromium") != std::wstring::npos) {
+            t = t.substr(0, p);
+        } else break;
+    }
+    return t;
+}
+
+void AddWatchedFromOpenWindows(HWND hwnd) {
+    EnumDiscordWindowsCtx ctx;
+    EnumWindows(EnumDiscordWindowsProc, (LPARAM)&ctx);
+    int added = 0;
+    for (HWND h : ctx.discordHwnds) {
+        wchar_t tb[512] = { 0 };
+        GetWindowTextW(h, tb, 511);
+        std::wstring title = StripBrowserSuffix(tb);
+        std::vector<std::wstring> parts;
+        size_t s = 0;
+        while (true) {
+            size_t b = title.find(L" | ", s);
+            if (b == std::wstring::npos) { parts.push_back(title.substr(s)); break; }
+            parts.push_back(title.substr(s, b - s));
+            s = b + 3;
+        }
+        for (size_t i = 0; i < parts.size(); ++i) {
+            size_t hashPos = parts[i].find(L'#');
+            if (hashPos == std::wstring::npos || hashPos > 6) continue;
+            std::wstring chan = Trim(parts[i].substr(hashPos));
+            std::wstring guild = (i + 1 < parts.size()) ? Trim(parts[i + 1]) : L"";
+            if (chan.size() < 2) continue;
+            DiscordChannel ch;
+            ch.id = L"WIN:" + ToLower(guild) + L"/" + ToLower(chan);
+            ch.guildId = L"";
+            ch.guildName = guild;
+            ch.name = chan;
+            EnterCriticalSection(&g_sniperLock);
+            bool exists = false;
+            for (const auto& e : g_watchedChannels) if (e.id == ch.id) { exists = true; break; }
+            if (!exists) { g_watchedChannels.push_back(ch); ++added; }
+            LeaveCriticalSection(&g_sniperLock);
+            break;
+        }
+    }
+    if (added > 0) {
+        SaveSniperConfig();
+        RefreshChannelAndKeywordListsUI();
+        SetSniperStatus(hwnd, L"Added " + std::to_wstring(added) + L" channel(s) from open Discord window(s). Keep Discord open (behind Roblox is fine).", COLOR_OK);
+    } else {
+        SetSniperStatus(hwnd, L"No channel found. Open Discord on a server text channel (title must show #channel | Server), then click again.", COLOR_WARN);
+    }
+}
+
 void DoLaunch(HWND hwnd) {
     wchar_t buf[2048] = { 0 };
     GetWindowTextW(g_hEntry, buf, 2047);
@@ -1774,9 +1837,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Row 4: Direct Channel URL / ID input
             g_hChanUrlEdit = CreateWindowExW(0, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                145, 310, 425, 26, hwnd, (HMENU)IDC_CHAN_URL_EDIT, hInst, NULL);
+                145, 310, 295, 26, hwnd, (HMENU)IDC_CHAN_URL_EDIT, hInst, NULL);
             SendMessageW(g_hChanUrlEdit, WM_SETFONT, (WPARAM)g_hFontText, TRUE);
-            SendMessageW(g_hChanUrlEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"https://discord.com/channels/SERVER_ID/CHANNEL_ID or Channel ID");
+            SendMessageW(g_hChanUrlEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Channel URL or ID (token mode)");
+
+            HWND hBtnWin = CreateWindowExW(0, L"BUTTON", L"+ From Open Window", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                446, 309, 124, 28, hwnd, (HMENU)IDC_ADD_FROM_WIN, hInst, NULL);
+            SetWindowSubclass(hBtnWin, CustomButtonProc, 12, IDC_ADD_FROM_WIN);
 
             HWND hBtnAddUrl = CreateWindowExW(0, L"BUTTON", L"+ Add URL/ID", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 578, 309, 110, 28, hwnd, (HMENU)IDC_ADD_URL_CHAN, hInst, NULL);
@@ -2009,6 +2076,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     SetSniperStatus(hwnd, L"Select or search for a channel first, or paste a Channel URL/ID below.", COLOR_WARN);
                 }
+            } else if (id == IDC_ADD_FROM_WIN) {
+                AddWatchedFromOpenWindows(hwnd);
             } else if (id == IDC_ADD_URL_CHAN) {
                 wchar_t buf[512] = { 0 };
                 GetWindowTextW(g_hChanUrlEdit, buf, 511);
