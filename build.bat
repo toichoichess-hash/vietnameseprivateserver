@@ -34,7 +34,7 @@ echo [*] Compiling Windows resource file...
 rc.exe /nologo /fo "bin\resource.res" "src\resource.rc"
 
 echo [*] Compiling C++ source code with DEP, ASLR & Control Flow Guard...
-cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /GS /guard:cf /GL /Fe:"bin\VngPsLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /LTCG /OPT:REF /OPT:ICF user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib
+cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /GS /guard:cf /GL /Fe:"bin\VngPsLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /LTCG /OPT:REF /OPT:ICF user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib advapi32.lib shlwapi.lib
 
 if %errorlevel% equ 0 (
     echo.
