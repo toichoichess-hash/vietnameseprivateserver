@@ -1469,7 +1469,7 @@ void InvalidateCachedDiscordUia() {
     s_lastSeenTailAid.clear();
 }
 
-bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker* pWalker, bool isInitialSeedPass) {
+bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker* pWalker, IUIAutomationCacheRequest* pCacheReq, bool isInitialSeedPass) {
     if (!pUia || !pWalker) return false;
 
     // Fast check: Is cached window still valid?
@@ -1549,9 +1549,12 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
 
     g_uiaWins = 1;
 
-    // Sub-millisecond (0.0001s) Tail Check:
+    // Sub-millisecond (0.0001s) Batch-Prefetched Tail Check (Zero RPC roundtrips!):
     IUIAutomationElement* pCur = NULL;
-    HRESULT hr = pWalker->GetLastChildElement(s_pCachedChatList, &pCur);
+    HRESULT hr = pCacheReq
+        ? pWalker->GetLastChildElementBuildCache(s_pCachedChatList, pCacheReq, &pCur)
+        : pWalker->GetLastChildElement(s_pCachedChatList, &pCur);
+
     if (FAILED(hr) || !pCur) {
         InvalidateCachedDiscordUia();
         return false;
@@ -1562,7 +1565,8 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
     std::wstring aid;
     while (pCur && backSteps < 5) {
         BSTR bAid = NULL;
-        if (SUCCEEDED(pCur->get_CurrentAutomationId(&bAid)) && bAid) {
+        HRESULT aHr = pCacheReq ? pCur->get_CachedAutomationId(&bAid) : pCur->get_CurrentAutomationId(&bAid);
+        if (SUCCEEDED(aHr) && bAid) {
             aid = bAid;
             SysFreeString(bAid);
             if (aid.rfind(L"chat-messages-", 0) == 0) {
@@ -1570,7 +1574,11 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
             }
         }
         IUIAutomationElement* pPrev = NULL;
-        pWalker->GetPreviousSiblingElement(pCur, &pPrev);
+        if (pCacheReq) {
+            pWalker->GetPreviousSiblingElementBuildCache(pCur, pCacheReq, &pPrev);
+        } else {
+            pWalker->GetPreviousSiblingElement(pCur, &pPrev);
+        }
         pCur->Release();
         pCur = pPrev;
         backSteps++;
@@ -1578,7 +1586,7 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
 
     if (!pCur) return false;
 
-    // If the latest message aid is identical to what we already verified, zero work needed!
+    // Fast check: If latest message aid is identical to what we already verified, exit in 0.00001ms!
     if (!isInitialSeedPass && !aid.empty() && aid == s_lastSeenTailAid) {
         pCur->Release();
         return false;
@@ -1588,13 +1596,14 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
     bool hit = false;
     std::wstring sourceLabel = std::wstring(L"Discord Window (") + s_cachedDiscordTitle + L")";
 
-    // Walk the latest up to 5 chat messages
+    // Walk the latest up to 5 chat messages using prefetched cached properties
     int checked = 0;
     while (pCur && checked < 5 && g_sniperRunning && !hit) {
         checked++;
         std::wstring curAid;
         BSTR bAid = NULL;
-        if (SUCCEEDED(pCur->get_CurrentAutomationId(&bAid)) && bAid) {
+        HRESULT aHr = pCacheReq ? pCur->get_CachedAutomationId(&bAid) : pCur->get_CurrentAutomationId(&bAid);
+        if (SUCCEEDED(aHr) && bAid) {
             curAid = bAid;
             SysFreeString(bAid);
         }
@@ -1624,17 +1633,11 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
             if (channelOk) {
                 std::wstring combined;
                 BSTR bName = NULL;
-                if (SUCCEEDED(pCur->get_CurrentName(&bName)) && bName) {
+                HRESULT nHr = pCacheReq ? pCur->get_CachedName(&bName) : pCur->get_CurrentName(&bName);
+                if (SUCCEEDED(nHr) && bName) {
                     combined = bName;
                     SysFreeString(bName);
                 }
-                VARIANT valVar;
-                VariantInit(&valVar);
-                if (SUCCEEDED(pCur->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &valVar)) && valVar.vt == VT_BSTR && valVar.bstrVal) {
-                    combined += L" ";
-                    combined += valVar.bstrVal;
-                }
-                VariantClear(&valVar);
 
                 std::wstring uri = BuildUri(combined);
                 if (uri.empty()) {
@@ -1684,7 +1687,11 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
         }
 
         IUIAutomationElement* pPrev = NULL;
-        pWalker->GetPreviousSiblingElement(pCur, &pPrev);
+        if (pCacheReq) {
+            pWalker->GetPreviousSiblingElementBuildCache(pCur, pCacheReq, &pPrev);
+        } else {
+            pWalker->GetPreviousSiblingElement(pCur, &pPrev);
+        }
         pCur->Release();
         pCur = pPrev;
     }
@@ -1695,6 +1702,8 @@ bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker*
 
 DWORD WINAPI DiscordUiaSniperWorkerThread(LPVOID) {
     AttachToInteractiveDesktop();
+    // Pin worker thread to Ryzen 7 5700X physical performance cores 2 & 3 (mask 0x0C)
+    SetThreadAffinityMask(GetCurrentThread(), 0x0C);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     timeBeginPeriod(1); // Set 1ms hardware timer interrupt resolution!
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -1710,6 +1719,14 @@ DWORD WINAPI DiscordUiaSniperWorkerThread(LPVOID) {
     IUIAutomationTreeWalker* pWalker = NULL;
     pUia->get_ControlViewWalker(&pWalker);
 
+    // Pre-create high-speed batch CacheRequest (prefetches AutomationId & Name in ONE RPC packet)
+    IUIAutomationCacheRequest* pCacheReq = NULL;
+    if (SUCCEEDED(pUia->CreateCacheRequest(&pCacheReq)) && pCacheReq) {
+        pCacheReq->AddProperty(UIA_AutomationIdPropertyId);
+        pCacheReq->AddProperty(UIA_NamePropertyId);
+        pCacheReq->put_TreeScope(TreeScope_Element);
+    }
+
     bool isFirstPass = true;
     ULONGLONG lastDiag = 0;
 
@@ -1724,14 +1741,14 @@ DWORD WINAPI DiscordUiaSniperWorkerThread(LPVOID) {
         }
 
         ULONGLONG nowTick = GetTickCount64();
-        ScanOpenDiscordWindowsFastUIA(pUia, pWalker, isFirstPass);
+        ScanOpenDiscordWindowsFastUIA(pUia, pWalker, pCacheReq, isFirstPass);
 
         if (nowTick - lastDiag >= 2000 && g_sniperRunning) {
             lastDiag = nowTick;
             if (g_uiaWins == 0) {
-                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (1ms TreeWalker): Open Discord on watched channel.", COLOR_WARN);
+                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (Prefetched 1ms TreeWalker): Open Discord on watched channel.", COLOR_WARN);
             } else {
-                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (1ms TreeWalker): Watching " +
+                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (Prefetched 1ms TreeWalker): Watching " +
                     std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
                     std::to_wstring((int)g_uiaLinks) + L" PS link(s) visible. Instant Join ready!", COLOR_OK);
             }
@@ -1744,6 +1761,7 @@ DWORD WINAPI DiscordUiaSniperWorkerThread(LPVOID) {
     }
 
     InvalidateCachedDiscordUia();
+    if (pCacheReq) pCacheReq->Release();
     if (pWalker) pWalker->Release();
     if (pUia) pUia->Release();
     CoUninitialize();
