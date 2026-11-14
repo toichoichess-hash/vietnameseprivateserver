@@ -25,7 +25,7 @@ jobs:
       run: |
         mkdir bin
         rc.exe /nologo /fo "bin\resource.res" "src\resource.rc"
-        cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /GS /guard:cf /GL /Fe:"bin\VngPsLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /LTCG /OPT:REF /OPT:ICF user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib advapi32.lib shlwapi.lib ole32.lib oleaut32.lib
+        cl.exe /nologo /O2 /W3 /DNDEBUG /EHsc /std:c++17 /GS /guard:cf /GL /Fe:"bin\VngPsLauncher.exe" /Fo:"bin\main.obj" "src\main.cpp" "bin\resource.res" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /LTCG /OPT:REF /OPT:ICF user32.lib gdi32.lib comctl32.lib dwmapi.lib shell32.lib advapi32.lib shlwapi.lib ole32.lib oleaut32.lib winhttp.lib
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
