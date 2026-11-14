@@ -1328,11 +1328,31 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
     if (!pOrCond) return false;
 
     bool hit = false;
+
+    // ONLY read Discord windows that are currently showing one of the WATCHED channels
+    EnterCriticalSection(&g_sniperLock);
+    std::vector<DiscordChannel> watchedSnapshot = g_watchedChannels;
+    LeaveCriticalSection(&g_sniperLock);
+
     for (HWND hDiscord : ctx.discordHwnds) {
         if (!g_sniperRunning) break;
 
         wchar_t winTitle[256] = { 0 };
         GetWindowTextW(hDiscord, winTitle, 255);
+        std::wstring lowTitle = ToLower(winTitle);
+        bool channelOk = false;
+        for (const auto& wc : watchedSnapshot) {
+            if (wc.id == UIA_CHANNEL_ID) continue;
+            std::wstring cn = ToLower(wc.name);
+            if (!cn.empty() && cn[0] == L'#') cn.erase(0, 1);
+            if (cn.empty() || lowTitle.find(cn) == std::wstring::npos) continue;
+            std::wstring gn = ToLower(wc.guildName);
+            bool realGuild = !gn.empty() && gn != L"custom server" && gn.rfind(L"server ", 0) != 0;
+            if (realGuild && lowTitle.find(gn) == std::wstring::npos) continue;
+            channelOk = true;
+            break;
+        }
+        if (!channelOk) continue;
         std::wstring sourceLabel = std::wstring(L"Discord Window (") + winTitle + L")";
 
         IUIAutomationElement* pRoot = NULL;
