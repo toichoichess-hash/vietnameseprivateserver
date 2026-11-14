@@ -520,13 +520,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             SetWindowSubclass(hBtnHideBg, CustomButtonProc, 3, IDC_HIDE_BG);
             SetWindowSubclass(hBtnLaunch, CustomButtonProc, 4, IDC_LAUNCH);
 
-            AddClipboardFormatListener(hwnd);
             CreateThread(NULL, 0, BackgroundLinkWatcherThread, NULL, 0, NULL);
-            return 0;
-        }
-
-        case WM_CLIPBOARDUPDATE: {
-            DoPaste(hwnd, true);
             return 0;
         }
 
@@ -621,7 +615,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY:
-            RemoveClipboardFormatListener(hwnd);
             Shell_NotifyIconW(NIM_DELETE, &g_nid);
             if (g_hBrushBg) DeleteObject(g_hBrushBg);
             if (g_hBrushCard) DeleteObject(g_hBrushCard);
