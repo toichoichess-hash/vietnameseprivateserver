@@ -561,10 +561,16 @@ void RefreshChannelAndKeywordListsUI() {
 // ============================================================================
 void LoadChannelsForSelectedServer(HWND hwnd);
 
-void ApplyServerFilterUI(HWND hwnd) {
+static bool g_inFilter = false;
+
+// typing=true: user is typing in the editable combo -> keep their text, keep dropdown open
+void ApplyServerFilterUI(HWND hwnd, bool typing = false) {
+    if (g_inFilter) return;
+    g_inFilter = true;
     wchar_t filterBuf[256] = { 0 };
-    if (g_hServerSearch) GetWindowTextW(g_hServerSearch, filterBuf, 255);
-    std::wstring query = ToLower(Trim(filterBuf));
+    if (typing) GetWindowTextW(g_hServerCombo, filterBuf, 255);
+    std::wstring raw = filterBuf;
+    std::wstring query = ToLower(Trim(raw));
 
     g_filteredGuilds.clear();
     SendMessageW(g_hServerCombo, CB_RESETCONTENT, 0, 0);
@@ -576,6 +582,16 @@ void ApplyServerFilterUI(HWND hwnd) {
         }
     }
 
+    if (typing) {
+        SetWindowTextW(g_hServerCombo, raw.c_str());
+        SendMessageW(g_hServerCombo, CB_SETEDITSEL, 0, MAKELPARAM((int)raw.size(), (int)raw.size()));
+        SendMessageW(g_hServerCombo, CB_SHOWDROPDOWN, TRUE, 0);
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
+        g_inFilter = false;
+        return;
+    }
+    g_inFilter = false;
+
     if (!g_filteredGuilds.empty()) {
         SendMessageW(g_hServerCombo, CB_SETCURSEL, 0, 0);
         LoadChannelsForSelectedServer(hwnd);
@@ -586,10 +602,13 @@ void ApplyServerFilterUI(HWND hwnd) {
     }
 }
 
-void ApplyChannelFilterUI() {
+void ApplyChannelFilterUI(bool typing = false) {
+    if (g_inFilter) return;
+    g_inFilter = true;
     wchar_t filterBuf[256] = { 0 };
-    if (g_hChannelSearch) GetWindowTextW(g_hChannelSearch, filterBuf, 255);
-    std::wstring query = ToLower(Trim(filterBuf));
+    if (typing) GetWindowTextW(g_hChannelCombo, filterBuf, 255);
+    std::wstring raw = filterBuf;
+    std::wstring query = ToLower(Trim(raw));
 
     g_filteredChannels.clear();
     SendMessageW(g_hChannelCombo, CB_RESETCONTENT, 0, 0);
@@ -601,9 +620,15 @@ void ApplyChannelFilterUI() {
         }
     }
 
-    if (!g_filteredChannels.empty()) {
+    if (typing) {
+        SetWindowTextW(g_hChannelCombo, raw.c_str());
+        SendMessageW(g_hChannelCombo, CB_SETEDITSEL, 0, MAKELPARAM((int)raw.size(), (int)raw.size()));
+        SendMessageW(g_hChannelCombo, CB_SHOWDROPDOWN, TRUE, 0);
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
+    } else if (!g_filteredChannels.empty()) {
         SendMessageW(g_hChannelCombo, CB_SETCURSEL, 0, 0);
     }
+    g_inFilter = false;
 }
 
 // ============================================================================
@@ -1649,29 +1674,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 560, 201, 128, 28, hwnd, (HMENU)IDC_LOAD_SERVERS, hInst, NULL);
             SetWindowSubclass(hBtnLoadSrv, CustomButtonProc, 5, IDC_LOAD_SERVERS);
 
-            // Row 2: Type-to-Search Filter Boxes for Server & Channel!
-            g_hServerSearch = CreateWindowExW(0, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                145, 238, 185, 25, hwnd, (HMENU)IDC_SERVER_SEARCH, hInst, NULL);
-            SendMessageW(g_hServerSearch, WM_SETFONT, (WPARAM)g_hFontText, TRUE);
-            SendMessageW(g_hServerSearch, EM_SETCUEBANNER, TRUE, (LPARAM)L"Type server name...");
-
-            g_hChannelSearch = CreateWindowExW(0, L"EDIT", L"",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                455, 238, 233, 25, hwnd, (HMENU)IDC_CHANNEL_SEARCH, hInst, NULL);
-            SendMessageW(g_hChannelSearch, WM_SETFONT, (WPARAM)g_hFontText, TRUE);
-            SendMessageW(g_hChannelSearch, EM_SETCUEBANNER, TRUE, (LPARAM)L"Type channel name (e.g. ps)...");
-
-            // Row 3: Server & Channel Dropdowns + Add Button
+            // Row 2: EDITABLE combos - click and TYPE to filter servers / channels
             g_hServerCombo = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                95, 272, 235, 300, hwnd, (HMENU)IDC_SERVER_COMBO, hInst, NULL);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL,
+                145, 236, 185, 300, hwnd, (HMENU)IDC_SERVER_COMBO, hInst, NULL);
             SendMessageW(g_hServerCombo, WM_SETFONT, (WPARAM)g_hFontText, TRUE);
+            SendMessageW(g_hServerCombo, CB_SETCUEBANNER, 0, (LPARAM)L"Type server name...");
 
             g_hChannelCombo = CreateWindowExW(0, L"COMBOBOX", L"",
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                395, 272, 175, 300, hwnd, (HMENU)IDC_CHANNEL_COMBO, hInst, NULL);
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL,
+                455, 236, 233, 300, hwnd, (HMENU)IDC_CHANNEL_COMBO, hInst, NULL);
             SendMessageW(g_hChannelCombo, WM_SETFONT, (WPARAM)g_hFontText, TRUE);
+            SendMessageW(g_hChannelCombo, CB_SETCUEBANNER, 0, (LPARAM)L"Type channel name (e.g. ps)...");
 
             HWND hBtnAddSel = CreateWindowExW(0, L"BUTTON", L"+ Add Channel", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 578, 271, 110, 28, hwnd, (HMENU)IDC_ADD_SEL_CHAN, hInst, NULL);
@@ -1845,10 +1859,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             SelectObject(hdc, g_hFontSub);
             SetTextColor(hdc, COLOR_MUTED);
             TextOutW(hdc, 32, 205, L"Discord Token:", 14);
-            TextOutW(hdc, 32, 241, L"Search Server:", 14);
-            TextOutW(hdc, 342, 241, L"Search Channel:", 15);
-            TextOutW(hdc, 32, 276, L"Server:", 7);
-            TextOutW(hdc, 342, 276, L"Channel:", 8);
+            TextOutW(hdc, 32, 241, L"Server (type):", 14);
+            TextOutW(hdc, 342, 241, L"Channel (type):", 15);
             TextOutW(hdc, 32, 313, L"Or Channel URL/ID:", 18);
 
             // Lower Left Card: Watched Channels
@@ -1887,14 +1899,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 ShowWindow(hwnd, SW_HIDE);
             } else if (id == IDC_LOAD_SERVERS) {
                 LoadDiscordServersUI(hwnd);
-            } else if (id == IDC_SERVER_SEARCH && code == EN_CHANGE) {
-                ApplyServerFilterUI(hwnd);
-            } else if (id == IDC_CHANNEL_SEARCH && code == EN_CHANGE) {
-                ApplyChannelFilterUI();
+            } else if (id == IDC_SERVER_COMBO && code == CBN_EDITCHANGE) {
+                ApplyServerFilterUI(hwnd, true);
+            } else if (id == IDC_CHANNEL_COMBO && code == CBN_EDITCHANGE) {
+                ApplyChannelFilterUI(true);
             } else if (id == IDC_SERVER_COMBO && code == CBN_SELCHANGE) {
-                LoadChannelsForSelectedServer(hwnd);
+                if (!g_inFilter) LoadChannelsForSelectedServer(hwnd);
             } else if (id == IDC_ADD_SEL_CHAN) {
                 int sel = (int)SendMessageW(g_hChannelCombo, CB_GETCURSEL, 0, 0);
+                if (sel < 0 && !g_filteredChannels.empty()) sel = 0;
                 if (sel >= 0 && sel < (int)g_filteredChannels.size()) {
                     DiscordChannel ch = g_filteredChannels[sel];
                     EnterCriticalSection(&g_sniperLock);
@@ -2151,8 +2164,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             } else if (hFocus == g_hChanUrlEdit) {
                 SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_ADD_URL_CHAN, BN_CLICKED), 0);
                 continue;
-            } else if (hFocus == g_hChannelSearch) {
+            } else if (hFocus && GetParent(hFocus) == g_hChannelCombo) {
+                SendMessageW(g_hChannelCombo, CB_SHOWDROPDOWN, FALSE, 0);
                 SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_ADD_SEL_CHAN, BN_CLICKED), 0);
+                continue;
+            } else if (hFocus && GetParent(hFocus) == g_hServerCombo) {
+                SendMessageW(g_hServerCombo, CB_SHOWDROPDOWN, FALSE, 0);
+                if (!g_filteredGuilds.empty()) {
+                    wchar_t t[256] = {0}; GetWindowTextW(g_hServerCombo, t, 255);
+                    int idx = (int)SendMessageW(g_hServerCombo, CB_FINDSTRINGEXACT, -1, (LPARAM)t);
+                    if (idx < 0) idx = 0;
+                    SendMessageW(g_hServerCombo, CB_SETCURSEL, idx, 0);
+                    LoadChannelsForSelectedServer(hwnd);
+                }
                 continue;
             } else if (hFocus == g_hEntry) {
                 DoLaunch(hwnd);
