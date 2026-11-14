@@ -150,6 +150,9 @@ CRITICAL_SECTION g_sniperLock;
 volatile bool g_sniperRunning = false;
 bool g_onlyNewMessages = true;
 bool g_anyNewPs = false;
+volatile bool g_tokenInvalid = false;
+volatile int g_uiaWins = 0;
+volatile int g_uiaLinks = 0;
 HWND g_hChkAny = NULL;
 #define IDC_CHK_ANY 218
 #define IDC_ADD_FROM_WIN 219
@@ -712,6 +715,7 @@ std::wstring DiscordApiGet(HINTERNET hConnect, const std::wstring& path, const s
         DWORD statusSize = sizeof(statusCode);
         WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
 
+        if (statusCode == 401) g_tokenInvalid = true;
         if (statusCode == 200) {
             DWORD avail = 0;
             while (WinHttpQueryDataAvailable(hReq, &avail) && avail > 0) {
@@ -1061,7 +1065,7 @@ DWORD WINAPI DiscordGatewayWebSocketThread(LPVOID) {
             }
         }
 
-        if (token.empty() || watchedMap.empty()) {
+        if (token.empty() || watchedMap.empty() || g_tokenInvalid) {
             Sleep(250);
             continue;
         }
@@ -1332,7 +1336,8 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
 
     bool hit = false;
 
-    // ONLY read Discord windows that are currently showing one of the WATCHED channels
+    g_uiaWins = 0;
+    g_uiaLinks = 0;
     EnterCriticalSection(&g_sniperLock);
     std::vector<DiscordChannel> watchedSnapshot = g_watchedChannels;
     LeaveCriticalSection(&g_sniperLock);
@@ -1356,6 +1361,7 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
             break;
         }
         if (!channelOk) continue;
+        g_uiaWins = g_uiaWins + 1;
         std::wstring sourceLabel = std::wstring(L"Discord Window (") + winTitle + L")";
 
         IUIAutomationElement* pRoot = NULL;
@@ -1391,6 +1397,7 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
                          combined.find(L"privateServerLinkCode") != std::wstring::npos)) {
                         std::wstring uri = BuildUri(combined);
                         if (!uri.empty()) {
+                            g_uiaLinks = g_uiaLinks + 1;
                             std::wstring uniqueKey = L"UIA_" + uri + L"_" + combined.substr(0, 64);
                             if (EvaluateCandidateChatMessage(uniqueKey, combined, sourceLabel, isInitialSeedPass)) {
                                 hit = true;
@@ -1421,12 +1428,18 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
     HINTERNET hConnect = hSession ? WinHttpConnect(hSession, L"discord.com", INTERNET_DEFAULT_HTTPS_PORT, 0) : NULL;
 
     bool isFirstPass = true;
+    ULONGLONG lastRest = 0, lastDiag = 0;
+    bool warnedToken = false;
 
     while (g_sniperRunning) {
         EnterCriticalSection(&g_sniperLock);
         std::vector<DiscordChannel> channels = g_watchedChannels;
         std::wstring token = g_discordToken;
         LeaveCriticalSection(&g_sniperLock);
+
+        ULONGLONG nowTick = GetTickCount64();
+        bool doRest = isFirstPass || (nowTick - lastRest >= 1500);   // REST is only a slow backup; WS is the fast path
+        if (doRest) lastRest = nowTick;
 
         bool useUia = false;
         for (const auto& ch : channels) {
@@ -1435,7 +1448,7 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
                 useUia = true;
                 continue;
             }
-            if (!token.empty() && hConnect) {
+            if (doRest && !token.empty() && hConnect && !g_tokenInvalid) {
                 std::wstring path = L"/api/v9/channels/" + ch.id + L"/messages?limit=3";
                 std::wstring json = DiscordApiGet(hConnect, path, token);
                 std::wstring label = ch.guildName + L" > " + ch.name;
@@ -1445,15 +1458,28 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
             }
         }
 
+        if (g_tokenInvalid && !warnedToken) {
+            warnedToken = true;
+            PostSniperStatusAsync(L"Discord token is EXPIRED (401). Click '+ From Open Window' to use no-token mode, or paste a fresh token.", COLOR_ERR);
+        }
+
         if (g_sniperRunning && useUia) {
             ScanOpenDiscordWindowsUIA(pUia, isFirstPass);
+            if (nowTick - lastDiag >= 2500 && g_sniperRunning) {
+                lastDiag = nowTick;
+                if (g_uiaWins == 0) {
+                    PostSniperStatusAsync(L"Window mode: no open Discord window shows a watched channel. Open it and click '+ From Open Window'.", COLOR_WARN);
+                } else {
+                    PostSniperStatusAsync(L"Window mode ACTIVE: reading " + std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
+                                          std::to_wstring((int)g_uiaLinks) + L" PS link(s) visible. Waiting for a new one...", COLOR_OK);
+                }
+            }
         }
 
         isFirstPass = false;
 
-        // Ultra-responsive loop while WebSocket handles 0.0001s instant push in parallel
         if (g_sniperRunning) {
-            Sleep(15);
+            Sleep(40);
         }
     }
 
@@ -1683,6 +1709,7 @@ void StartOrStopSniper(HWND hwnd, bool forceStop = false) {
     }
 
     g_seenMessages.clear();
+    g_tokenInvalid = false;
     g_sniperRunning = true;
     size_t numCh = g_watchedChannels.size();
     size_t numKw = g_keywords.size();
@@ -2178,6 +2205,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 LeaveCriticalSection(&g_sniperLock);
                 SaveSniperConfig();
             } else if (id == IDC_TOGGLE_SNIPER) {
+                if (!g_sniperRunning) AddWatchedFromOpenWindows(hwnd);   // auto-pick up the channel Discord currently shows
                 StartOrStopSniper(hwnd, false);
             } else if (id == ID_TRAY_SHOW) {
                 if (IsWindowVisible(hwnd)) {
