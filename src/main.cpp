@@ -216,17 +216,15 @@ bool LaunchRobloxUri(const std::wstring& uri, bool fromBackground = false) {
     g_lastLaunchedUri = uri;
     g_lastLaunchTick = now;
 
-    // Clean up any zombie/existing RobloxPlayerBeta.exe holding SingleInstanceGuard
-    CleanupExistingRobloxProcesses();
-    Sleep(80);
-
     // 1. Primary: Launch Froststrap / Bloxstrap / Fishstrap directly on winsta0\default
+    // If Roblox is already open, Froststrap hands off the deeplink to the existing instance
+    // seamlessly without closing or crashing it!
     std::wstring strapExe = FindFroststrapOrBootstrapperExe();
     if (!strapExe.empty()) {
         std::wstring cmd = L"\"" + strapExe + L"\" -player \"" + uri + L"\"";
         if (SpawnProcessOnInteractiveDesktop(cmd)) {
             if (g_hMainWnd) {
-                SetStatus(g_hMainWnd, L"Launched Froststrap Private Server!", COLOR_OK);
+                SetStatus(g_hMainWnd, L"Joining Private Server via Froststrap...", COLOR_OK);
             }
             return true;
         }
@@ -236,7 +234,7 @@ bool LaunchRobloxUri(const std::wstring& uri, bool fromBackground = false) {
     HINSTANCE res = ShellExecuteW(NULL, L"open", uri.c_str(), NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)res > 32) {
         if (g_hMainWnd) {
-            SetStatus(g_hMainWnd, L"Launched Roblox Private Server!", COLOR_OK);
+            SetStatus(g_hMainWnd, L"Joining Private Server...", COLOR_OK);
         }
         return true;
     } else {
