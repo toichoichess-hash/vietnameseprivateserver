@@ -901,8 +901,10 @@ static int EditDist(const std::wstring& a, const std::wstring& b) {
 
 static bool FuzzyWordMatch(const std::wstring& w, const std::wstring& kw) {
     if (w.empty() || kw.empty()) return false;
+    if (kw.size() == 1) {
+        return w == kw || (kw == L"s" && (w.rfind(L"sin", 0) == 0 || w.rfind(L"shitm", 0) == 0));
+    }
     if (w.find(kw) != std::wstring::npos) return true;                 // keyword inside word
-    if (kw.size() == 1) return w[0] == kw[0];                          // single letter: word starts with it
     if (w.size() >= 2 && kw.find(w) != std::wstring::npos && kw.rfind(w, 0) == 0) return true; // word is prefix of keyword (si, sin, sini..)
     size_t common = 0;
     while (common < w.size() && common < kw.size() && w[common] == kw[common]) ++common;
@@ -915,6 +917,7 @@ static bool FuzzyWordMatch(const std::wstring& w, const std::wstring& kw) {
 static std::wstring FuzzyKeywordHit(const std::wstring& text, const std::vector<std::wstring>& kws) {
     // drop URL tokens, then split into alphanumeric words
     std::vector<std::wstring> words;
+    std::wstring cleanText;
     std::wstring tok;
     auto flushTok = [&]() {
         if (tok.empty()) return;
@@ -923,9 +926,20 @@ static std::wstring FuzzyKeywordHit(const std::wstring& text, const std::vector<
             std::wstring w;
             for (wchar_t c : lt) {
                 if (std::iswalnum(c)) w.push_back(c);
-                else { if (!w.empty()) words.push_back(w); w.clear(); }
+                else {
+                    if (!w.empty()) {
+                        if (!cleanText.empty()) cleanText.push_back(L' ');
+                        cleanText += w;
+                        words.push_back(w);
+                        w.clear();
+                    }
+                }
             }
-            if (!w.empty()) words.push_back(w);
+            if (!w.empty()) {
+                if (!cleanText.empty()) cleanText.push_back(L' ');
+                cleanText += w;
+                words.push_back(w);
+            }
         }
         tok.clear();
     };
@@ -937,6 +951,27 @@ static std::wstring FuzzyKeywordHit(const std::wstring& text, const std::vector<
     for (const auto& kw : kws) {
         std::wstring lkw = ToLower(Trim(kw));
         if (lkw.empty()) continue;
+        if (lkw.find(L' ') != std::wstring::npos) {
+            if (cleanText.find(lkw) != std::wstring::npos) return kw;
+            // Require all tokens of a multi-word keyword to fuzzy-match words in the message
+            std::vector<std::wstring> parts;
+            std::wstring cur;
+            for (wchar_t c : lkw) {
+                if (std::iswalnum(c)) cur.push_back(c);
+                else if (!cur.empty()) { parts.push_back(cur); cur.clear(); }
+            }
+            if (!cur.empty()) parts.push_back(cur);
+            bool allMatch = !parts.empty();
+            for (const auto& p : parts) {
+                bool partOk = false;
+                for (const auto& w : words) {
+                    if (FuzzyWordMatch(w, p)) { partOk = true; break; }
+                }
+                if (!partOk) { allMatch = false; break; }
+            }
+            if (allMatch) return kw;
+            continue;
+        }
         for (const auto& w : words) {
             if (FuzzyWordMatch(w, lkw)) return kw;
         }
@@ -1303,13 +1338,38 @@ BOOL CALLBACK EnumDiscordWindowsProc(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
+static bool TitleOrListMatchesWatched(
+    const std::wstring& lowTitle,
+    const std::wstring& lowListName,
+    const std::vector<DiscordChannel>& watchedSnapshot
+) {
+    for (const auto& wc : watchedSnapshot) {
+        if (wc.id == UIA_CHANNEL_ID) return true;
+        std::wstring cn = ToLower(wc.name);
+        if (!cn.empty() && cn[0] == L'#') cn.erase(0, 1);
+        if (cn.empty()) continue;
+        bool chanHit = (lowTitle.find(cn) != std::wstring::npos) ||
+                       (!lowListName.empty() && lowListName.find(cn) != std::wstring::npos);
+        if (!chanHit) continue;
+        std::wstring gn = ToLower(wc.guildName);
+        bool realGuild = !gn.empty() && gn != L"custom server" && gn.rfind(L"server ", 0) != 0;
+        if (realGuild && lowTitle.find(gn) == std::wstring::npos) continue;
+        return true;
+    }
+    return false;
+}
+
 bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
     if (!pUia) return false;
     EnumDiscordWindowsCtx ctx;
     EnumWindows(EnumDiscordWindowsProc, (LPARAM)&ctx);
     if (ctx.discordHwnds.empty()) return false;
 
-    VARIANT varListItem, varHyperlink;
+    VARIANT varList, varListItem, varHyperlink;
+    VariantInit(&varList);
+    varList.vt = VT_I4;
+    varList.lVal = UIA_ListControlTypeId;
+
     VariantInit(&varListItem);
     varListItem.vt = VT_I4;
     varListItem.lVal = UIA_ListItemControlTypeId;
@@ -1318,21 +1378,18 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
     varHyperlink.vt = VT_I4;
     varHyperlink.lVal = UIA_HyperlinkControlTypeId;
 
+    IUIAutomationCondition* pListCond = NULL;
     IUIAutomationCondition* pListItemCond = NULL;
     IUIAutomationCondition* pLinkCond = NULL;
+    pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varList, &pListCond);
     pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varListItem, &pListItemCond);
     pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varHyperlink, &pLinkCond);
-    if (!pListItemCond || !pLinkCond) {
+    if (!pListCond || !pListItemCond || !pLinkCond) {
+        if (pListCond) pListCond->Release();
         if (pListItemCond) pListItemCond->Release();
         if (pLinkCond) pLinkCond->Release();
         return false;
     }
-
-    IUIAutomationCondition* pOrCond = NULL;
-    pUia->CreateOrCondition(pListItemCond, pLinkCond, &pOrCond);
-    pListItemCond->Release();
-    pLinkCond->Release();
-    if (!pOrCond) return false;
 
     bool hit = false;
 
@@ -1348,72 +1405,178 @@ bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
         wchar_t winTitle[256] = { 0 };
         GetWindowTextW(hDiscord, winTitle, 255);
         std::wstring lowTitle = ToLower(winTitle);
-        bool channelOk = false;
-        for (const auto& wc : watchedSnapshot) {
-            if (wc.id == UIA_CHANNEL_ID) continue;
-            std::wstring cn = ToLower(wc.name);
-            if (!cn.empty() && cn[0] == L'#') cn.erase(0, 1);
-            if (cn.empty() || lowTitle.find(cn) == std::wstring::npos) continue;
-            std::wstring gn = ToLower(wc.guildName);
-            bool realGuild = !gn.empty() && gn != L"custom server" && gn.rfind(L"server ", 0) != 0;
-            if (realGuild && lowTitle.find(gn) == std::wstring::npos) continue;
-            channelOk = true;
-            break;
-        }
-        if (!channelOk) continue;
-        g_uiaWins = g_uiaWins + 1;
+        bool titleChannelOk = TitleOrListMatchesWatched(lowTitle, L"", watchedSnapshot);
+        bool windowMatchedWatched = false;
         std::wstring sourceLabel = std::wstring(L"Discord Window (") + winTitle + L")";
 
         IUIAutomationElement* pRoot = NULL;
         if (FAILED(pUia->ElementFromHandle(hDiscord, &pRoot)) || !pRoot) continue;
 
-        IUIAutomationElementArray* pItems = NULL;
-        if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pOrCond, &pItems)) && pItems) {
-            int count = 0;
-            pItems->get_Length(&count);
-            int startIdx = (count > 30) ? (count - 30) : 0;
-            for (int i = count - 1; i >= startIdx && g_sniperRunning; --i) {
-                IUIAutomationElement* pElem = NULL;
-                if (SUCCEEDED(pItems->GetElement(i, &pElem)) && pElem) {
-                    std::wstring combined;
-                    BSTR bName = NULL;
-                    if (SUCCEEDED(pElem->get_CurrentName(&bName)) && bName) {
-                        combined += bName;
-                        SysFreeString(bName);
-                    }
-                    VARIANT valVar;
-                    VariantInit(&valVar);
-                    if (SUCCEEDED(pElem->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &valVar)) && valVar.vt == VT_BSTR && valVar.bstrVal) {
-                        combined += L" ";
-                        combined += valVar.bstrVal;
-                    }
-                    VariantClear(&valVar);
-                    pElem->Release();
+        IUIAutomationElementArray* pLists = NULL;
+        if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pListCond, &pLists)) && pLists) {
+            int listCount = 0;
+            pLists->get_Length(&listCount);
 
-                    if (!combined.empty() &&
-                        (combined.find(L"roblox.com/") != std::wstring::npos ||
-                         combined.find(L"roblox://") != std::wstring::npos ||
-                         combined.find(L"share?code=") != std::wstring::npos ||
-                         combined.find(L"privateServerLinkCode") != std::wstring::npos)) {
+            for (int li = 0; li < listCount && g_sniperRunning && !hit; ++li) {
+                IUIAutomationElement* pList = NULL;
+                if (FAILED(pLists->GetElement(li, &pList)) || !pList) continue;
+
+                std::wstring lowListName;
+                std::wstring lowListCls;
+                BSTR bListName = NULL;
+                if (SUCCEEDED(pList->get_CurrentName(&bListName)) && bListName) {
+                    lowListName = ToLower(bListName);
+                    SysFreeString(bListName);
+                }
+                BSTR bListCls = NULL;
+                if (SUCCEEDED(pList->get_CurrentClassName(&bListCls)) && bListCls) {
+                    lowListCls = ToLower(bListCls);
+                    SysFreeString(bListCls);
+                }
+
+                // Ignore Discord's left channel tree and right member list sidebars
+                if (lowListName == L"channels" || lowListName == L"members" ||
+                    lowListCls.rfind(L"members_", 0) == 0 || lowListCls.rfind(L"content_", 0) == 0) {
+                    pList->Release();
+                    continue;
+                }
+
+                bool isMessagesList = (lowListName.rfind(L"messages in ", 0) == 0);
+                bool listOrTitleChannelOk = titleChannelOk || TitleOrListMatchesWatched(lowTitle, lowListName, watchedSnapshot);
+
+                IUIAutomationElementArray* pItems = NULL;
+                int count = 0;
+                if (SUCCEEDED(pList->FindAll(TreeScope_Children, pListItemCond, &pItems)) && pItems) {
+                    pItems->get_Length(&count);
+                    if (count == 0) {
+                        pItems->Release();
+                        pItems = NULL;
+                    }
+                }
+                if (!pItems) {
+                    if (SUCCEEDED(pList->FindAll(TreeScope_Descendants, pListItemCond, &pItems)) && pItems) {
+                        pItems->get_Length(&count);
+                    }
+                }
+
+                if (pItems && count > 0) {
+                    int startIdx = (count > 20) ? (count - 20) : 0;
+                    for (int i = count - 1; i >= startIdx && g_sniperRunning; --i) {
+                        IUIAutomationElement* pElem = NULL;
+                        if (FAILED(pItems->GetElement(i, &pElem)) || !pElem) continue;
+
+                        std::wstring aid;
+                        BSTR bAid = NULL;
+                        if (SUCCEEDED(pElem->get_CurrentAutomationId(&bAid)) && bAid) {
+                            aid = bAid;
+                            SysFreeString(bAid);
+                        }
+
+                        bool isChatMsgAid = (aid.rfind(L"chat-messages-", 0) == 0);
+                        if (!isMessagesList && !isChatMsgAid) {
+                            pElem->Release();
+                            continue;
+                        }
+
+                        std::wstring msgChannelId;
+                        std::wstring msgId;
+                        if (isChatMsgAid) {
+                            size_t dashPos = aid.find(L'-', 14);
+                            if (dashPos != std::wstring::npos && dashPos > 14) {
+                                msgChannelId = aid.substr(14, dashPos - 14);
+                                msgId = aid.substr(dashPos + 1);
+                            }
+                        }
+
+                        bool idChannelOk = false;
+                        if (!msgChannelId.empty()) {
+                            for (const auto& wc : watchedSnapshot) {
+                                if (wc.id == msgChannelId) {
+                                    idChannelOk = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!idChannelOk && !listOrTitleChannelOk) {
+                            pElem->Release();
+                            continue;
+                        }
+                        windowMatchedWatched = true;
+
+                        std::wstring combined;
+                        BSTR bName = NULL;
+                        if (SUCCEEDED(pElem->get_CurrentName(&bName)) && bName) {
+                            combined += bName;
+                            SysFreeString(bName);
+                        }
+                        VARIANT valVar;
+                        VariantInit(&valVar);
+                        if (SUCCEEDED(pElem->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &valVar)) && valVar.vt == VT_BSTR && valVar.bstrVal) {
+                            combined += L" ";
+                            combined += valVar.bstrVal;
+                        }
+                        VariantClear(&valVar);
+
+                        // If URL wasn't exposed directly in ListItem Name/Value (e.g. embed/masked link), inspect child Hyperlinks
                         std::wstring uri = BuildUri(combined);
+                        if (uri.empty()) {
+                            IUIAutomationElementArray* pLinks = NULL;
+                            if (SUCCEEDED(pElem->FindAll(TreeScope_Descendants, pLinkCond, &pLinks)) && pLinks) {
+                                int linkCount = 0;
+                                pLinks->get_Length(&linkCount);
+                                for (int lk = 0; lk < linkCount; ++lk) {
+                                    IUIAutomationElement* pLink = NULL;
+                                    if (SUCCEEDED(pLinks->GetElement(lk, &pLink)) && pLink) {
+                                        BSTR bLName = NULL;
+                                        if (SUCCEEDED(pLink->get_CurrentName(&bLName)) && bLName) {
+                                            combined += L" ";
+                                            combined += bLName;
+                                            SysFreeString(bLName);
+                                        }
+                                        VARIANT lv;
+                                        VariantInit(&lv);
+                                        if (SUCCEEDED(pLink->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &lv)) && lv.vt == VT_BSTR && lv.bstrVal) {
+                                            combined += L" ";
+                                            combined += lv.bstrVal;
+                                        }
+                                        VariantClear(&lv);
+                                        pLink->Release();
+                                    }
+                                }
+                                pLinks->Release();
+                            }
+                            uri = BuildUri(combined);
+                        }
+                        pElem->Release();
+
                         if (!uri.empty()) {
                             g_uiaLinks = g_uiaLinks + 1;
-                            std::wstring uniqueKey = L"UIA_" + uri + L"_" + combined.substr(0, 64);
-                            if (EvaluateCandidateChatMessage(uniqueKey, combined, sourceLabel, isInitialSeedPass)) {
+                            std::wstring uniqueKey = !msgId.empty()
+                                ? (L"MSG_" + msgId)
+                                : (L"UIA_" + uri + L"_" + combined.substr(0, 64));
+                            if (EvaluateCandidateChatMessage(uniqueKey, combined, sourceLabel, isInitialSeedPass, combined)) {
                                 hit = true;
                                 break;
                             }
                         }
                     }
                 }
+                if (pItems) pItems->Release();
+                pList->Release();
             }
-            pItems->Release();
+            pLists->Release();
+        }
+        if (windowMatchedWatched || titleChannelOk) {
+            g_uiaWins = g_uiaWins + 1;
         }
         pRoot->Release();
         if (hit) break;
     }
 
-    pOrCond->Release();
+    pListCond->Release();
+    pListItemCond->Release();
+    pLinkCond->Release();
     return hit;
 }
 
@@ -1429,7 +1592,6 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
 
     bool isFirstPass = true;
     ULONGLONG lastRest = 0, lastDiag = 0;
-    bool warnedToken = false;
 
     while (g_sniperRunning) {
         EnterCriticalSection(&g_sniperLock);
@@ -1458,19 +1620,17 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
             }
         }
 
-        if (g_tokenInvalid && !warnedToken) {
-            warnedToken = true;
-            PostSniperStatusAsync(L"Discord token is EXPIRED (401). Click '+ From Open Window' to use no-token mode, or paste a fresh token.", COLOR_ERR);
-        }
-
-        if (g_sniperRunning && useUia) {
+        if (g_sniperRunning && !channels.empty()) {
             ScanOpenDiscordWindowsUIA(pUia, isFirstPass);
-            if (nowTick - lastDiag >= 2500 && g_sniperRunning) {
+            if ((token.empty() || g_tokenInvalid || useUia) && (nowTick - lastDiag >= 2500) && g_sniperRunning) {
                 lastDiag = nowTick;
                 if (g_uiaWins == 0) {
-                    PostSniperStatusAsync(L"Window mode: no open Discord window shows a watched channel. Open it and click '+ From Open Window'.", COLOR_WARN);
+                    PostSniperStatusAsync(L"Window mode: no open Discord window shows a watched channel. Open it (background is OK).", COLOR_WARN);
                 } else {
-                    PostSniperStatusAsync(L"Window mode ACTIVE: reading " + std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
+                    std::wstring modeTag = g_tokenInvalid
+                        ? L"Window mode ACTIVE (token expired, no-token OK): reading "
+                        : L"Window mode ACTIVE (no-token): reading ";
+                    PostSniperStatusAsync(modeTag + std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
                                           std::to_wstring((int)g_uiaLinks) + L" PS link(s) visible. Waiting for a new one...", COLOR_OK);
                 }
             }
@@ -1479,7 +1639,7 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
         isFirstPass = false;
 
         if (g_sniperRunning) {
-            Sleep(40);
+            Sleep(15);
         }
     }
 
