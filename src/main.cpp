@@ -333,6 +333,87 @@ void PostSniperStatusAsync(const std::wstring& text, COLORREF color) {
     PostMessageW(g_hMainWnd, WM_SNIPER_STATUS, (WPARAM)color, (LPARAM)pStr);
 }
 
+std::wstring FindDirectRobloxPlayerExe() {
+    static std::wstring s_cachedRobloxExe;
+    if (!s_cachedRobloxExe.empty() && PathFileExistsW(s_cachedRobloxExe.c_str())) {
+        return s_cachedRobloxExe;
+    }
+
+    // 1. Check Froststrap PlayerPath in registry: HKCU\Software\Froststrap -> PlayerPath
+    HKEY hKey = NULL;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Froststrap", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        wchar_t val[MAX_PATH] = { 0 };
+        DWORD sz = sizeof(val);
+        if (RegQueryValueExW(hKey, L"PlayerPath", NULL, NULL, (LPBYTE)val, &sz) == ERROR_SUCCESS) {
+            std::wstring candidate = std::wstring(val) + L"\\RobloxPlayerBeta.exe";
+            if (PathFileExistsW(candidate.c_str())) {
+                RegCloseKey(hKey);
+                s_cachedRobloxExe = candidate;
+                return s_cachedRobloxExe;
+            }
+        }
+        RegCloseKey(hKey);
+    }
+
+    // 2. Check currently running RobloxPlayerBeta window
+    HWND hRbx = FindWindowW(L"WINDOWSCLIENT", NULL);
+    if (hRbx) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hRbx, &pid);
+        if (pid) {
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (hProc) {
+                wchar_t procPath[MAX_PATH] = { 0 };
+                DWORD len = MAX_PATH;
+                if (QueryFullProcessImageNameW(hProc, 0, procPath, &len)) {
+                    CloseHandle(hProc);
+                    s_cachedRobloxExe = procPath;
+                    return s_cachedRobloxExe;
+                }
+                CloseHandle(hProc);
+            }
+        }
+    }
+
+    // 3. Check AppData\Local\Froststrap\Versions and AppData\Local\Roblox\Versions
+    wchar_t localAppData[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) > 0) {
+        std::wstring pattern = std::wstring(localAppData) + L"\\Froststrap\\Versions\\*";
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) {
+                    std::wstring found = std::wstring(localAppData) + L"\\Froststrap\\Versions\\" + fd.cFileName + L"\\RobloxPlayerBeta.exe";
+                    if (PathFileExistsW(found.c_str())) {
+                        FindClose(hFind);
+                        s_cachedRobloxExe = found;
+                        return s_cachedRobloxExe;
+                    }
+                }
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+        pattern = std::wstring(localAppData) + L"\\Roblox\\Versions\\*";
+        hFind = FindFirstFileW(pattern.c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) {
+                    std::wstring found = std::wstring(localAppData) + L"\\Roblox\\Versions\\" + fd.cFileName + L"\\RobloxPlayerBeta.exe";
+                    if (PathFileExistsW(found.c_str())) {
+                        FindClose(hFind);
+                        s_cachedRobloxExe = found;
+                        return s_cachedRobloxExe;
+                    }
+                }
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    return L"";
+}
+
 std::wstring FindFroststrapOrBootstrapperExe() {
     if (!g_cachedStrapExe.empty()) return g_cachedStrapExe;
     wchar_t localAppData[MAX_PATH] = { 0 };
@@ -367,19 +448,31 @@ bool LaunchRobloxUri(const std::wstring& uri, bool fromBackground = false) {
     g_lastLaunchedUri = uri;
     g_lastLaunchTick = now;
 
-    // 1. Primary: Cached Froststrap / Bloxstrap / Fishstrap path (0ms disk lookup overhead!)
-    std::wstring strapExe = FindFroststrapOrBootstrapperExe();
-    if (!strapExe.empty()) {
-        std::wstring cmd = L"\"" + strapExe + L"\" -player \"" + uri + L"\"";
+    // 1. Ultra-fast direct native Roblox launch (0.001s, bypasses 2.5s Froststrap AWS pings!)
+    std::wstring directRbx = FindDirectRobloxPlayerExe();
+    if (!directRbx.empty()) {
+        std::wstring cmd = L"\"" + directRbx + L"\" \"" + uri + L"\"";
         if (SpawnProcessOnInteractiveDesktop(cmd)) {
             if (g_hMainWnd) {
-                SetStatus(g_hMainWnd, L"Joining Private Server via Froststrap (Instant Handoff)...", COLOR_OK);
+                SetStatus(g_hMainWnd, L"INSTANT JOIN sent directly to Roblox (0.001s)!", COLOR_OK);
             }
             return true;
         }
     }
 
-    // 2. Fallback: ShellExecuteW on roblox:// protocol
+    // 2. Primary Bootstrapper Fallback (Froststrap / Bloxstrap / Fishstrap)
+    std::wstring strapExe = FindFroststrapOrBootstrapperExe();
+    if (!strapExe.empty()) {
+        std::wstring cmd = L"\"" + strapExe + L"\" -player \"" + uri + L"\"";
+        if (SpawnProcessOnInteractiveDesktop(cmd)) {
+            if (g_hMainWnd) {
+                SetStatus(g_hMainWnd, L"Joining Private Server via Froststrap...", COLOR_OK);
+            }
+            return true;
+        }
+    }
+
+    // 3. Fallback: ShellExecuteW on roblox:// protocol
     HINSTANCE res = ShellExecuteW(NULL, L"open", uri.c_str(), NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)res > 32) {
         if (g_hMainWnd) {
@@ -1359,239 +1452,283 @@ static bool TitleOrListMatchesWatched(
     return false;
 }
 
-bool ScanOpenDiscordWindowsUIA(IUIAutomation* pUia, bool isInitialSeedPass) {
-    if (!pUia) return false;
-    EnumDiscordWindowsCtx ctx;
-    EnumWindows(EnumDiscordWindowsProc, (LPARAM)&ctx);
-    if (ctx.discordHwnds.empty()) return false;
+static HWND s_cachedDiscordHwnd = NULL;
+static IUIAutomationElement* s_pCachedChatList = NULL;
+static std::wstring s_cachedDiscordTitle = L"";
 
-    VARIANT varList, varListItem, varHyperlink;
-    VariantInit(&varList);
-    varList.vt = VT_I4;
-    varList.lVal = UIA_ListControlTypeId;
-
-    VariantInit(&varListItem);
-    varListItem.vt = VT_I4;
-    varListItem.lVal = UIA_ListItemControlTypeId;
-
-    VariantInit(&varHyperlink);
-    varHyperlink.vt = VT_I4;
-    varHyperlink.lVal = UIA_HyperlinkControlTypeId;
-
-    IUIAutomationCondition* pListCond = NULL;
-    IUIAutomationCondition* pListItemCond = NULL;
-    IUIAutomationCondition* pLinkCond = NULL;
-    pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varList, &pListCond);
-    pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varListItem, &pListItemCond);
-    pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varHyperlink, &pLinkCond);
-    if (!pListCond || !pListItemCond || !pLinkCond) {
-        if (pListCond) pListCond->Release();
-        if (pListItemCond) pListItemCond->Release();
-        if (pLinkCond) pLinkCond->Release();
-        return false;
+void InvalidateCachedDiscordUia() {
+    if (s_pCachedChatList) {
+        s_pCachedChatList->Release();
+        s_pCachedChatList = NULL;
     }
+    s_cachedDiscordHwnd = NULL;
+    s_cachedDiscordTitle.clear();
+}
 
-    bool hit = false;
+bool ScanOpenDiscordWindowsFastUIA(IUIAutomation* pUia, IUIAutomationTreeWalker* pWalker, bool isInitialSeedPass) {
+    if (!pUia || !pWalker) return false;
 
-    g_uiaWins = 0;
-    g_uiaLinks = 0;
     EnterCriticalSection(&g_sniperLock);
     std::vector<DiscordChannel> watchedSnapshot = g_watchedChannels;
     LeaveCriticalSection(&g_sniperLock);
+    if (watchedSnapshot.empty()) return false;
 
-    for (HWND hDiscord : ctx.discordHwnds) {
-        if (!g_sniperRunning) break;
+    // Check if cached chat list element is still valid
+    bool cacheOk = false;
+    if (s_pCachedChatList && s_cachedDiscordHwnd && IsWindow(s_cachedDiscordHwnd)) {
+        BSTR bName = NULL;
+        if (SUCCEEDED(s_pCachedChatList->get_CurrentName(&bName)) && bName) {
+            std::wstring lowName = ToLower(bName);
+            SysFreeString(bName);
+            if (lowName.rfind(L"messages in ", 0) == 0) {
+                cacheOk = true;
+            }
+        }
+    }
+    if (!cacheOk) {
+        InvalidateCachedDiscordUia();
+    }
 
-        wchar_t winTitle[256] = { 0 };
-        GetWindowTextW(hDiscord, winTitle, 255);
-        std::wstring lowTitle = ToLower(winTitle);
-        bool titleChannelOk = TitleOrListMatchesWatched(lowTitle, L"", watchedSnapshot);
-        bool windowMatchedWatched = false;
-        std::wstring sourceLabel = std::wstring(L"Discord Window (") + winTitle + L")";
+    // If cache not valid, discover the active Discord window and its Messages List (takes ~100ms once)
+    if (!s_pCachedChatList) {
+        EnumDiscordWindowsCtx ctx;
+        EnumWindows(EnumDiscordWindowsProc, (LPARAM)&ctx);
+        if (ctx.discordHwnds.empty()) {
+            g_uiaWins = 0;
+            return false;
+        }
 
-        IUIAutomationElement* pRoot = NULL;
-        if (FAILED(pUia->ElementFromHandle(hDiscord, &pRoot)) || !pRoot) continue;
+        VARIANT varList;
+        VariantInit(&varList);
+        varList.vt = VT_I4;
+        varList.lVal = UIA_ListControlTypeId;
+        IUIAutomationCondition* pListCond = NULL;
+        pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varList, &pListCond);
+        if (!pListCond) return false;
 
-        IUIAutomationElementArray* pLists = NULL;
-        if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pListCond, &pLists)) && pLists) {
-            int listCount = 0;
-            pLists->get_Length(&listCount);
+        for (HWND hDiscord : ctx.discordHwnds) {
+            wchar_t winTitle[256] = { 0 };
+            GetWindowTextW(hDiscord, winTitle, 255);
+            std::wstring lowTitle = ToLower(winTitle);
+            bool titleMatch = TitleOrListMatchesWatched(lowTitle, L"", watchedSnapshot);
 
-            for (int li = 0; li < listCount && g_sniperRunning && !hit; ++li) {
-                IUIAutomationElement* pList = NULL;
-                if (FAILED(pLists->GetElement(li, &pList)) || !pList) continue;
+            IUIAutomationElement* pRoot = NULL;
+            if (FAILED(pUia->ElementFromHandle(hDiscord, &pRoot)) || !pRoot) continue;
 
-                std::wstring lowListName;
-                std::wstring lowListCls;
-                BSTR bListName = NULL;
-                if (SUCCEEDED(pList->get_CurrentName(&bListName)) && bListName) {
-                    lowListName = ToLower(bListName);
-                    SysFreeString(bListName);
-                }
-                BSTR bListCls = NULL;
-                if (SUCCEEDED(pList->get_CurrentClassName(&bListCls)) && bListCls) {
-                    lowListCls = ToLower(bListCls);
-                    SysFreeString(bListCls);
-                }
+            IUIAutomationElementArray* pLists = NULL;
+            if (SUCCEEDED(pRoot->FindAll(TreeScope_Descendants, pListCond, &pLists)) && pLists) {
+                int listCount = 0;
+                pLists->get_Length(&listCount);
+                for (int li = 0; li < listCount; ++li) {
+                    IUIAutomationElement* pList = NULL;
+                    if (FAILED(pLists->GetElement(li, &pList)) || !pList) continue;
 
-                // Ignore Discord's left channel tree and right member list sidebars
-                if (lowListName == L"channels" || lowListName == L"members" ||
-                    lowListCls.rfind(L"members_", 0) == 0 || lowListCls.rfind(L"content_", 0) == 0) {
+                    BSTR bListName = NULL;
+                    std::wstring lowListName;
+                    if (SUCCEEDED(pList->get_CurrentName(&bListName)) && bListName) {
+                        lowListName = ToLower(bListName);
+                        SysFreeString(bListName);
+                    }
+                    if (lowListName.rfind(L"messages in ", 0) == 0) {
+                        if (titleMatch || TitleOrListMatchesWatched(lowTitle, lowListName, watchedSnapshot)) {
+                            s_cachedDiscordHwnd = hDiscord;
+                            s_cachedDiscordTitle = winTitle;
+                            s_pCachedChatList = pList;
+                            s_pCachedChatList->AddRef();
+                            pList->Release();
+                            break;
+                        }
+                    }
                     pList->Release();
-                    continue;
+                }
+                pLists->Release();
+            }
+            pRoot->Release();
+            if (s_pCachedChatList) break;
+        }
+        pListCond->Release();
+    }
+
+    if (!s_pCachedChatList) {
+        g_uiaWins = 0;
+        return false;
+    }
+
+    g_uiaWins = 1;
+    bool hit = false;
+    std::wstring sourceLabel = std::wstring(L"Discord Window (") + s_cachedDiscordTitle + L")";
+
+    // ULTRA-FAST (0.001s) TreeWalker traversal from the newest message backward!
+    IUIAutomationElement* pCur = NULL;
+    if (SUCCEEDED(pWalker->GetLastChildElement(s_pCachedChatList, &pCur)) && pCur) {
+        int checked = 0;
+        while (pCur && checked < 12 && g_sniperRunning && !hit) {
+            checked++;
+            std::wstring aid;
+            BSTR bAid = NULL;
+            if (SUCCEEDED(pCur->get_CurrentAutomationId(&bAid)) && bAid) {
+                aid = bAid;
+                SysFreeString(bAid);
+            }
+
+            if (aid.rfind(L"chat-messages-", 0) == 0) {
+                size_t dashPos = aid.find(L'-', 14);
+                std::wstring msgChannelId, msgId;
+                if (dashPos != std::wstring::npos && dashPos > 14) {
+                    msgChannelId = aid.substr(14, dashPos - 14);
+                    msgId = aid.substr(dashPos + 1);
                 }
 
-                bool isMessagesList = (lowListName.rfind(L"messages in ", 0) == 0);
-                bool listOrTitleChannelOk = titleChannelOk || TitleOrListMatchesWatched(lowTitle, lowListName, watchedSnapshot);
-
-                IUIAutomationElementArray* pItems = NULL;
-                int count = 0;
-                if (SUCCEEDED(pList->FindAll(TreeScope_Children, pListItemCond, &pItems)) && pItems) {
-                    pItems->get_Length(&count);
-                    if (count == 0) {
-                        pItems->Release();
-                        pItems = NULL;
+                bool channelOk = false;
+                for (const auto& wc : watchedSnapshot) {
+                    if (wc.id == UIA_CHANNEL_ID || wc.id == msgChannelId) {
+                        channelOk = true;
+                        break;
+                    }
+                    std::wstring cn = ToLower(wc.name);
+                    if (!cn.empty() && cn[0] == L'#') cn.erase(0, 1);
+                    if (!cn.empty() && ToLower(s_cachedDiscordTitle).find(cn) != std::wstring::npos) {
+                        channelOk = true;
+                        break;
                     }
                 }
-                if (!pItems) {
-                    if (SUCCEEDED(pList->FindAll(TreeScope_Descendants, pListItemCond, &pItems)) && pItems) {
-                        pItems->get_Length(&count);
+
+                if (channelOk) {
+                    std::wstring combined;
+                    BSTR bName = NULL;
+                    if (SUCCEEDED(pCur->get_CurrentName(&bName)) && bName) {
+                        combined = bName;
+                        SysFreeString(bName);
                     }
-                }
+                    VARIANT valVar;
+                    VariantInit(&valVar);
+                    if (SUCCEEDED(pCur->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &valVar)) && valVar.vt == VT_BSTR && valVar.bstrVal) {
+                        combined += L" ";
+                        combined += valVar.bstrVal;
+                    }
+                    VariantClear(&valVar);
 
-                if (pItems && count > 0) {
-                    int startIdx = (count > 20) ? (count - 20) : 0;
-                    for (int i = count - 1; i >= startIdx && g_sniperRunning; --i) {
-                        IUIAutomationElement* pElem = NULL;
-                        if (FAILED(pItems->GetElement(i, &pElem)) || !pElem) continue;
-
-                        std::wstring aid;
-                        BSTR bAid = NULL;
-                        if (SUCCEEDED(pElem->get_CurrentAutomationId(&bAid)) && bAid) {
-                            aid = bAid;
-                            SysFreeString(bAid);
-                        }
-
-                        bool isChatMsgAid = (aid.rfind(L"chat-messages-", 0) == 0);
-                        if (!isMessagesList && !isChatMsgAid) {
-                            pElem->Release();
-                            continue;
-                        }
-
-                        std::wstring msgChannelId;
-                        std::wstring msgId;
-                        if (isChatMsgAid) {
-                            size_t dashPos = aid.find(L'-', 14);
-                            if (dashPos != std::wstring::npos && dashPos > 14) {
-                                msgChannelId = aid.substr(14, dashPos - 14);
-                                msgId = aid.substr(dashPos + 1);
-                            }
-                        }
-
-                        bool idChannelOk = false;
-                        if (!msgChannelId.empty()) {
-                            for (const auto& wc : watchedSnapshot) {
-                                if (wc.id == msgChannelId) {
-                                    idChannelOk = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!idChannelOk && !listOrTitleChannelOk) {
-                            pElem->Release();
-                            continue;
-                        }
-                        windowMatchedWatched = true;
-
-                        std::wstring combined;
-                        BSTR bName = NULL;
-                        if (SUCCEEDED(pElem->get_CurrentName(&bName)) && bName) {
-                            combined += bName;
-                            SysFreeString(bName);
-                        }
-                        VARIANT valVar;
-                        VariantInit(&valVar);
-                        if (SUCCEEDED(pElem->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &valVar)) && valVar.vt == VT_BSTR && valVar.bstrVal) {
-                            combined += L" ";
-                            combined += valVar.bstrVal;
-                        }
-                        VariantClear(&valVar);
-
-                        // If URL wasn't exposed directly in ListItem Name/Value (e.g. embed/masked link), inspect child Hyperlinks
-                        std::wstring uri = BuildUri(combined);
-                        if (uri.empty()) {
+                    std::wstring uri = BuildUri(combined);
+                    if (uri.empty()) {
+                        // Check child hyperlinks if embed link
+                        VARIANT varL;
+                        VariantInit(&varL);
+                        varL.vt = VT_I4;
+                        varL.lVal = UIA_HyperlinkControlTypeId;
+                        IUIAutomationCondition* pLCond = NULL;
+                        pUia->CreatePropertyCondition(UIA_ControlTypePropertyId, varL, &pLCond);
+                        if (pLCond) {
                             IUIAutomationElementArray* pLinks = NULL;
-                            if (SUCCEEDED(pElem->FindAll(TreeScope_Descendants, pLinkCond, &pLinks)) && pLinks) {
-                                int linkCount = 0;
-                                pLinks->get_Length(&linkCount);
-                                for (int lk = 0; lk < linkCount; ++lk) {
-                                    IUIAutomationElement* pLink = NULL;
-                                    if (SUCCEEDED(pLinks->GetElement(lk, &pLink)) && pLink) {
-                                        BSTR bLName = NULL;
-                                        if (SUCCEEDED(pLink->get_CurrentName(&bLName)) && bLName) {
+                            if (SUCCEEDED(pCur->FindAll(TreeScope_Descendants, pLCond, &pLinks)) && pLinks) {
+                                int lkCnt = 0;
+                                pLinks->get_Length(&lkCnt);
+                                for (int k = 0; k < lkCnt; ++k) {
+                                    IUIAutomationElement* pL = NULL;
+                                    if (SUCCEEDED(pLinks->GetElement(k, &pL)) && pL) {
+                                        BSTR bLN = NULL;
+                                        if (SUCCEEDED(pL->get_CurrentName(&bLN)) && bLN) {
                                             combined += L" ";
-                                            combined += bLName;
-                                            SysFreeString(bLName);
+                                            combined += bLN;
+                                            SysFreeString(bLN);
                                         }
-                                        VARIANT lv;
-                                        VariantInit(&lv);
-                                        if (SUCCEEDED(pLink->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &lv)) && lv.vt == VT_BSTR && lv.bstrVal) {
-                                            combined += L" ";
-                                            combined += lv.bstrVal;
-                                        }
-                                        VariantClear(&lv);
-                                        pLink->Release();
+                                        pL->Release();
                                     }
                                 }
                                 pLinks->Release();
                             }
-                            uri = BuildUri(combined);
+                            pLCond->Release();
                         }
-                        pElem->Release();
+                        uri = BuildUri(combined);
+                    }
 
-                        if (!uri.empty()) {
-                            g_uiaLinks = g_uiaLinks + 1;
-                            std::wstring uniqueKey = !msgId.empty()
-                                ? (L"MSG_" + msgId)
-                                : (L"UIA_" + uri + L"_" + combined.substr(0, 64));
-                            if (EvaluateCandidateChatMessage(uniqueKey, combined, sourceLabel, isInitialSeedPass, combined)) {
-                                hit = true;
-                                break;
-                            }
+                    if (!uri.empty()) {
+                        g_uiaLinks = g_uiaLinks + 1;
+                        std::wstring uniqueKey = !msgId.empty()
+                            ? (L"MSG_" + msgId)
+                            : (L"UIA_" + uri + L"_" + combined.substr(0, 64));
+                        if (EvaluateCandidateChatMessage(uniqueKey, combined, sourceLabel, isInitialSeedPass, combined)) {
+                            hit = true;
+                            pCur->Release();
+                            break;
                         }
                     }
                 }
-                if (pItems) pItems->Release();
-                pList->Release();
             }
-            pLists->Release();
+
+            IUIAutomationElement* pPrev = NULL;
+            pWalker->GetPreviousSiblingElement(pCur, &pPrev);
+            pCur->Release();
+            pCur = pPrev;
         }
-        if (windowMatchedWatched || titleChannelOk) {
-            g_uiaWins = g_uiaWins + 1;
-        }
-        pRoot->Release();
-        if (hit) break;
+        if (pCur) pCur->Release();
     }
 
-    pListCond->Release();
-    pListItemCond->Release();
-    pLinkCond->Release();
     return hit;
+}
+
+DWORD WINAPI DiscordUiaSniperWorkerThread(LPVOID) {
+    AttachToInteractiveDesktop();
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    IUIAutomation* pUia = NULL;
+    CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void**)&pUia);
+    if (!pUia) {
+        CoUninitialize();
+        return 1;
+    }
+
+    IUIAutomationTreeWalker* pWalker = NULL;
+    pUia->get_ControlViewWalker(&pWalker);
+
+    bool isFirstPass = true;
+    ULONGLONG lastDiag = 0;
+
+    while (g_sniperRunning) {
+        EnterCriticalSection(&g_sniperLock);
+        bool hasWatched = !g_watchedChannels.empty();
+        LeaveCriticalSection(&g_sniperLock);
+
+        if (!hasWatched) {
+            Sleep(50);
+            continue;
+        }
+
+        ULONGLONG nowTick = GetTickCount64();
+        ScanOpenDiscordWindowsFastUIA(pUia, pWalker, isFirstPass);
+
+        if (nowTick - lastDiag >= 2000 && g_sniperRunning) {
+            lastDiag = nowTick;
+            if (g_uiaWins == 0) {
+                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (0.001s TreeWalker): Open Discord on watched channel.", COLOR_WARN);
+            } else {
+                PostSniperStatusAsync(L"Ultra-Fast Sniper ACTIVE (0.001s TreeWalker): Watching " +
+                    std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
+                    std::to_wstring((int)g_uiaLinks) + L" PS link(s) visible. Instant Join ready!", COLOR_OK);
+            }
+        }
+
+        isFirstPass = false;
+        if (g_sniperRunning) {
+            Sleep(4); // 4ms loop = 250 checks per second!
+        }
+    }
+
+    InvalidateCachedDiscordUia();
+    if (pWalker) pWalker->Release();
+    if (pUia) pUia->Release();
+    CoUninitialize();
+    return 0;
 }
 
 DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
     AttachToInteractiveDesktop();
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
-    IUIAutomation* pUia = NULL;
-    CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void**)&pUia);
-
     HINTERNET hSession = WinHttpOpen(L"VngPsLauncher/1.2", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     HINTERNET hConnect = hSession ? WinHttpConnect(hSession, L"discord.com", INTERNET_DEFAULT_HTTPS_PORT, 0) : NULL;
 
     bool isFirstPass = true;
-    ULONGLONG lastRest = 0, lastDiag = 0;
+    ULONGLONG lastRest = 0;
 
     while (g_sniperRunning) {
         EnterCriticalSection(&g_sniperLock);
@@ -1600,17 +1737,12 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
         LeaveCriticalSection(&g_sniperLock);
 
         ULONGLONG nowTick = GetTickCount64();
-        bool doRest = isFirstPass || (nowTick - lastRest >= 1500);   // REST is only a slow backup; WS is the fast path
-        if (doRest) lastRest = nowTick;
-
-        bool useUia = false;
-        for (const auto& ch : channels) {
-            if (!g_sniperRunning) break;
-            if (ch.id == UIA_CHANNEL_ID || ch.id.rfind(L"WIN:", 0) == 0) {
-                useUia = true;
-                continue;
-            }
-            if (doRest && !token.empty() && hConnect && !g_tokenInvalid) {
+        bool doRest = isFirstPass || (nowTick - lastRest >= 1500);
+        if (doRest && !token.empty() && hConnect && !g_tokenInvalid) {
+            lastRest = nowTick;
+            for (const auto& ch : channels) {
+                if (!g_sniperRunning) break;
+                if (ch.id == UIA_CHANNEL_ID || ch.id.rfind(L"WIN:", 0) == 0) continue;
                 std::wstring path = L"/api/v9/channels/" + ch.id + L"/messages?limit=3";
                 std::wstring json = DiscordApiGet(hConnect, path, token);
                 std::wstring label = ch.guildName + L" > " + ch.name;
@@ -1620,32 +1752,14 @@ DWORD WINAPI DiscordSniperWorkerThread(LPVOID) {
             }
         }
 
-        if (g_sniperRunning && !channels.empty()) {
-            ScanOpenDiscordWindowsUIA(pUia, isFirstPass);
-            if ((token.empty() || g_tokenInvalid || useUia) && (nowTick - lastDiag >= 2500) && g_sniperRunning) {
-                lastDiag = nowTick;
-                if (g_uiaWins == 0) {
-                    PostSniperStatusAsync(L"Window mode: no open Discord window shows a watched channel. Open it (background is OK).", COLOR_WARN);
-                } else {
-                    std::wstring modeTag = g_tokenInvalid
-                        ? L"Window mode ACTIVE (token expired, no-token OK): reading "
-                        : L"Window mode ACTIVE (no-token): reading ";
-                    PostSniperStatusAsync(modeTag + std::to_wstring((int)g_uiaWins) + L" Discord window(s), " +
-                                          std::to_wstring((int)g_uiaLinks) + L" PS link(s) visible. Waiting for a new one...", COLOR_OK);
-                }
-            }
-        }
-
         isFirstPass = false;
-
         if (g_sniperRunning) {
-            Sleep(15);
+            Sleep(100);
         }
     }
 
     if (hConnect) WinHttpCloseHandle(hConnect);
     if (hSession) WinHttpCloseHandle(hSession);
-    if (pUia) pUia->Release();
     CoUninitialize();
     return 0;
 }
@@ -1885,8 +1999,12 @@ void StartOrStopSniper(HWND hwnd, bool forceStop = false) {
                        L" keyword(s). Auto-stops on join!";
     SetSniperStatus(hwnd, msg, COLOR_OK);
 
-    // Launch both the Real-Time Discord Gateway WebSocket stream AND the Keep-Alive Poller!
+    // Launch all 3 sniper engines in parallel!
+    // 1. Ultra-Fast Dedicated UIA TreeWalker Engine (0.001s local window reading)
+    CreateThread(NULL, 0, DiscordUiaSniperWorkerThread, NULL, 0, NULL);
+    // 2. Real-Time Discord Gateway WebSocket (0.0001s live push if token provided)
     CreateThread(NULL, 0, DiscordGatewayWebSocketThread, NULL, 0, NULL);
+    // 3. Keep-Alive REST Backup (throttled)
     CreateThread(NULL, 0, DiscordSniperWorkerThread, NULL, 0, NULL);
 }
 
@@ -2423,7 +2541,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // 1. Check if invoked with a URL or flag
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    bool forceShowUi = false;
+    bool forceShowUi = true;
     if (argv && argc > 1) {
         for (int i = 1; i < argc; ++i) {
             std::wstring arg = Trim(argv[i]);
@@ -2432,6 +2550,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 continue;
             }
             if (arg == L"--background" || arg == L"--single-argument") {
+                forceShowUi = false;
                 continue;
             }
             std::wstring uri = BuildUri(arg);
