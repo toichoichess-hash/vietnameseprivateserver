@@ -149,6 +149,9 @@ std::wstring g_cachedStrapExe = L"";
 CRITICAL_SECTION g_sniperLock;
 volatile bool g_sniperRunning = false;
 bool g_onlyNewMessages = true;
+bool g_anyNewPs = false;
+HWND g_hChkAny = NULL;
+#define IDC_CHK_ANY 218
 std::wstring g_discordToken = L"";
 
 std::vector<DiscordGuild> g_allGuilds;
@@ -459,6 +462,7 @@ void SaveSniperConfig() {
     if (out.is_open()) {
         out << "TOKEN=" << WideToUtf8(g_discordToken) << "\n";
         out << "NEW_ONLY=" << (g_onlyNewMessages ? "1" : "0") << "\n";
+        out << "ANY_PS=" << (g_anyNewPs ? "1" : "0") << "\n";
         for (const auto& kw : g_keywords) {
             out << "KW=" << WideToUtf8(kw) << "\n";
         }
@@ -483,6 +487,8 @@ void LoadSniperConfig() {
                 g_discordToken = Utf8ToWide(line.substr(6));
             } else if (line.rfind("NEW_ONLY=", 0) == 0) {
                 g_onlyNewMessages = (line.substr(9) != "0");
+            } else if (line.rfind("ANY_PS=", 0) == 0) {
+                g_anyNewPs = (line.substr(7) == "1");
             } else if (line.rfind("KW=", 0) == 0) {
                 std::wstring kw = Trim(Utf8ToWide(line.substr(3)));
                 if (!kw.empty()) g_keywords.push_back(kw);
@@ -871,11 +877,72 @@ struct SniperHitPayload {
     std::wstring sourceLabel;
 };
 
+// Fuzzy keyword match: "sin"/"sinis"/"sinster"/"sinister bos" all match keyword "sinister"; "boss" matches "bos", etc.
+static int EditDist(const std::wstring& a, const std::wstring& b) {
+    std::vector<int> prev(b.size() + 1), cur(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) prev[j] = (int)j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        cur[0] = (int)i;
+        for (size_t j = 1; j <= b.size(); ++j) {
+            int c = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            cur[j] = (std::min)((std::min)(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + c);
+        }
+        std::swap(prev, cur);
+    }
+    return prev[b.size()];
+}
+
+static bool FuzzyWordMatch(const std::wstring& w, const std::wstring& kw) {
+    if (w.empty() || kw.empty()) return false;
+    if (w.find(kw) != std::wstring::npos) return true;                 // keyword inside word
+    if (kw.size() == 1) return w[0] == kw[0];                          // single letter: word starts with it
+    if (w.size() >= 2 && kw.find(w) != std::wstring::npos && kw.rfind(w, 0) == 0) return true; // word is prefix of keyword (si, sin, sini..)
+    size_t common = 0;
+    while (common < w.size() && common < kw.size() && w[common] == kw[common]) ++common;
+    if (common >= 2 && common >= (std::min)(w.size(), kw.size())) return true;
+    if (common >= 3) return true;                                      // shares 3+ leading chars
+    if (kw.size() >= 4 && w.size() >= 3 && EditDist(w, kw) <= (kw.size() >= 6 ? 2 : 1)) return true; // typos
+    return false;
+}
+
+static std::wstring FuzzyKeywordHit(const std::wstring& text, const std::vector<std::wstring>& kws) {
+    // drop URL tokens, then split into alphanumeric words
+    std::vector<std::wstring> words;
+    std::wstring tok;
+    auto flushTok = [&]() {
+        if (tok.empty()) return;
+        std::wstring lt = ToLower(tok);
+        if (lt.find(L"roblox") == std::wstring::npos && lt.find(L"http") == std::wstring::npos && lt.find(L"://") == std::wstring::npos && lt.find(L"code=") == std::wstring::npos) {
+            std::wstring w;
+            for (wchar_t c : lt) {
+                if (std::iswalnum(c)) w.push_back(c);
+                else { if (!w.empty()) words.push_back(w); w.clear(); }
+            }
+            if (!w.empty()) words.push_back(w);
+        }
+        tok.clear();
+    };
+    for (wchar_t c : text) {
+        if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') flushTok();
+        else tok.push_back(c);
+    }
+    flushTok();
+    for (const auto& kw : kws) {
+        std::wstring lkw = ToLower(Trim(kw));
+        if (lkw.empty()) continue;
+        for (const auto& w : words) {
+            if (FuzzyWordMatch(w, lkw)) return kw;
+        }
+    }
+    return L"";
+}
+
 bool EvaluateCandidateChatMessage(
     const std::wstring& msgUniqueKey,
     const std::wstring& msgText,
     const std::wstring& sourceLabel,
-    bool isInitialSeedPass
+    bool isInitialSeedPass,
+    const std::wstring& kwText = L""
 ) {
     if (msgText.empty() || !g_sniperRunning) return false;
 
@@ -897,23 +964,16 @@ bool EvaluateCandidateChatMessage(
         return false;
     }
 
-    // 2. Ultra-fast case-insensitive keyword scan
-    std::wstring lowerMsg = ToLower(msgText);
+    // 2. Mode "join ANY new PS" or fuzzy keyword match
     std::wstring matchedKw = L"";
     bool kwMatch = false;
 
-    if (g_keywords.empty()) {
+    if (g_anyNewPs || g_keywords.empty()) {
         kwMatch = true;
-        matchedKw = L"(any PS link)";
+        matchedKw = L"(any new PS)";
     } else {
-        for (const auto& kw : g_keywords) {
-            std::wstring lkw = ToLower(Trim(kw));
-            if (!lkw.empty() && lowerMsg.find(lkw) != std::wstring::npos) {
-                kwMatch = true;
-                matchedKw = kw;
-                break;
-            }
-        }
+        matchedKw = FuzzyKeywordHit(kwText.empty() ? msgText : kwText, g_keywords);
+        kwMatch = !matchedKw.empty();
     }
 
     if (!kwMatch || !g_sniperRunning) {
@@ -1140,7 +1200,7 @@ DWORD WINAPI DiscordGatewayWebSocketThread(LPVOID) {
                             // Include raw payload tail as fallback in case link is inside an embed
                             std::wstring combined = content + L" " + payload;
                             std::wstring label = matchedChan.guildName + L" > " + matchedChan.name + L" [LIVE WS]";
-                            if (EvaluateCandidateChatMessage(L"MSG_" + msgId, combined, label, false)) {
+                            if (EvaluateCandidateChatMessage(L"MSG_" + msgId, combined, label, false, content)) {
                                 break;
                             }
                         }
@@ -1207,7 +1267,7 @@ bool ScanDiscordChannelJsonMessages(
         std::wstring content = ExtractJsonStringFieldFast(obj, L"\"content\"");
         if (!msgId.empty()) {
             std::wstring combined = content + L" " + UnescapeJsonString(obj);
-            if (EvaluateCandidateChatMessage(L"MSG_" + msgId, combined, sourceLabel, isInitialSeedPass)) {
+            if (EvaluateCandidateChatMessage(L"MSG_" + msgId, combined, sourceLabel, isInitialSeedPass, content)) {
                 return true;
             }
         }
@@ -1739,6 +1799,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             SendMessageW(g_hChkNewOnly, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
             SendMessageW(g_hChkNewOnly, BM_SETCHECK, g_onlyNewMessages ? BST_CHECKED : BST_UNCHECKED, 0);
 
+            g_hChkAny = CreateWindowExW(0, L"BUTTON", L"Join ANY new PS (ignore keywords)",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                440, 550, 248, 22, hwnd, (HMENU)IDC_CHK_ANY, hInst, NULL);
+            SendMessageW(g_hChkAny, WM_SETFONT, (WPARAM)g_hFontSub, TRUE);
+            SendMessageW(g_hChkAny, BM_SETCHECK, g_anyNewPs ? BST_CHECKED : BST_UNCHECKED, 0);
+
             g_hBtnToggleSniper = CreateWindowExW(0, L"BUTTON", L"Start Real-Time 0.0001s Discord PS Sniper (Background)",
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 32, 576, 656, 38, hwnd, (HMENU)IDC_TOGGLE_SNIPER, hInst, NULL);
@@ -1873,7 +1939,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             DrawCard(hdc, 404, 356, 700, 542);
             SelectObject(hdc, g_hFontSection);
             SetTextColor(hdc, COLOR_FG);
-            TextOutW(hdc, 412, 363, L"Keywords (Join if chat has keyword)", 35);
+            TextOutW(hdc, 412, 363, L"Keywords (similar words match too)", 34);
 
             // Bottom Sniper Status
             SelectObject(hdc, g_hFontSub);
@@ -2011,6 +2077,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 SaveSniperConfig();
                 RefreshChannelAndKeywordListsUI();
                 SetSniperStatus(hwnd, L"Removed selected keyword.", COLOR_MUTED);
+            } else if (id == IDC_CHK_ANY) {
+                EnterCriticalSection(&g_sniperLock);
+                g_anyNewPs = (SendMessageW(g_hChkAny, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                LeaveCriticalSection(&g_sniperLock);
+                SaveSniperConfig();
+                SetSniperStatus(hwnd, g_anyNewPs ? L"Mode: join ANY new PS link posted in watched channels." : L"Mode: join only when a (similar) keyword matches.", COLOR_OK);
             } else if (id == IDC_CHK_NEW_ONLY) {
                 EnterCriticalSection(&g_sniperLock);
                 g_onlyNewMessages = (SendMessageW(g_hChkNewOnly, BM_GETCHECK, 0, 0) == BST_CHECKED);
